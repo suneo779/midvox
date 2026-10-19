@@ -70,3 +70,15 @@ class SessionStoreTests(unittest.TestCase):
             with self.assertRaises(Exception):
                 store.transfer(restore=True)
         self.assertEqual(self.path.read_text(), self.contents)
+
+    def test_discord_selected_account_is_encrypted_and_portable(self):
+        contents = json.dumps({"token": "private-discord-session", "id": "123", "login_method": "browser-v2"})
+        self.path.write_text(contents)
+        with patch.object(store, "Path", return_value=self.path):
+            self.assertTrue(store.transfer(kind="discord"))
+            record = self.records["discord:owner:1410320300129652932"]
+            self.assertNotIn("private-discord-session", record["encrypted"])
+            self.path.unlink()
+            with patch.dict(os.environ, {"DISCORD_CLIENT_ID": "new-application"}):
+                self.assertTrue(store.transfer(restore=True, kind="discord"))
+        self.assertEqual(self.path.read_text(), contents)

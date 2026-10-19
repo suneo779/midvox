@@ -80,21 +80,17 @@ export USER_DESKTOP_READY_FILE=/tmp/midvox-user-desktop-ready
 export USER_GATEWAY_READY_FILE=/tmp/midvox-user-gateway-ready
 rm -f "$USER_DESKTOP_READY_FILE" "$USER_GATEWAY_READY_FILE"
 BUMP_PID=""
-# Restore saved logins for YouTube; the bump worker uses USER_TOKEN only.
+# Restore encrypted owner logins before starting the optional account worker.
 export COOKIE_PATH=/tmp/midvox-youtube-cookies.json
 timeout 20s python /opt/youtube-session/youtube_session_store.py || echo "WARNING: Login restore timed out; continuing startup."
 echo "Starting optional account supervisor in the background..."
 (
   cd "$ROOT/bot" || exit 1
   while true; do
-    if [ -z "${USER_TOKEN//[[:space:]]/}" ]; then
-      sleep 5
-      continue
-    fi
     python bump_sidecar.py 2>&1 | tee "$ROOT/bump.log"
     sidecar_exit=${PIPESTATUS[0]}
     if [ "$sidecar_exit" = "78" ]; then
-      echo "WARNING: Discord rejected USER_TOKEN; update it in Railway Variables. Main services remain running." >&2
+      echo "WARNING: Discord account login required; use Admin Panel > Discord login or update USER_TOKEN. Main services remain running." >&2
       sleep 60
     else
       echo "WARNING: Optional account worker exited ($sidecar_exit); retrying in 5s." >&2

@@ -16,7 +16,7 @@ export default async function AdminPage() {
   }
 
   const owners: string[] = (process.env.OWNER_IDS || "").match(/\d{17,20}/g) || [];
-  return <AdminContent canManageYouTubeLogin={owners.includes(session.user?.id || "")} />;
+  return <AdminContent canManageOwnerLogins={owners.includes(session.user?.id || "")} />;
 }
 
 

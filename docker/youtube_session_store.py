@@ -11,8 +11,8 @@ from pathlib import Path
 def session_ids(kind):
     legacy = kind + ":" + os.getenv("DISCORD_CLIENT_ID", "midvox")
     owners = re.findall(r"\d{17,20}", os.getenv("OWNER_IDS", ""))
-    if kind == "youtube" and owners:
-        return ["youtube:owner:" + owners[0], legacy]
+    if owners:
+        return [kind + ":owner:" + owners[0], legacy]
     return [legacy]
 
 

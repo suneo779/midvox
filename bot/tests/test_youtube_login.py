@@ -17,6 +17,17 @@ exec(compile(ast.Module(body=classes, type_ignores=[]), str(source), "exec"), br
 
 
 class BrowserHealthTests(unittest.IsolatedAsyncioTestCase):
+    async def test_discord_login_collects_only_its_own_api_authorization(self):
+        browser = browser_namespace["LoginBrowser"]("discord")
+        browser.capture_account_header({"method": "Network.requestWillBeSentExtraInfo", "params": {
+            "requestId": "1", "headers": {"authorization": "selected-session"}}})
+        self.assertIsNone(browser.account_token)
+        browser.capture_account_header({"method": "Network.requestWillBeSent", "params": {
+            "requestId": "1", "request": {"url": "https://discord.com/api/v10/users/@me", "headers": {}}}})
+        self.assertEqual(browser.account_token, "selected-session")
+        youtube = browser_namespace["LoginBrowser"]()
+        self.assertIsNone(youtube.account_token)
+
     async def test_capture_uses_virtual_display_without_gpu_surface(self):
         from unittest.mock import AsyncMock
         browser = browser_namespace["LoginBrowser"]()

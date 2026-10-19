@@ -48,6 +48,9 @@ class LoginBrowser:
         self.process = self.display = self.profile = self.session = None
         self.socket = None
         self.sequence = 0
+        self.account_token = None
+        self.discord_requests = set()
+        self.discord_headers = {}
         self.last_used = time.monotonic()
         self.lock = asyncio.Lock()
 
@@ -61,6 +64,8 @@ class LoginBrowser:
             async with asyncio.timeout(10):
                 async for message in self.socket:
                     data = json.loads(message.data)
+                    if self.kind == "discord":
+                        self.capture_account_header(data)
                     if data.get("method") == "Inspector.targetCrashed":
                         raise BrowserUnavailable("The browser ran out of resources. Reopen it; your saved session is safe.")
                     if data.get("id") == ident:
@@ -72,6 +77,39 @@ class LoginBrowser:
         except TimeoutError as exc:
             raise BrowserUnavailable("Browser stopped responding. Reopen it; your saved session is safe.") from exc
         raise BrowserUnavailable("Browser connection closed. Reopen the login browser.")
+
+    def capture_account_header(self, event):
+        """Keep only this owner's Discord API credential, privately in memory."""
+        params = event.get("params", {})
+        request_id = params.get("requestId")
+        if event.get("method") == "Network.requestWillBeSent":
+            request = params.get("request", {})
+            if request.get("url", "").startswith("https://discord.com/api/"):
+                self.discord_requests.add(request_id)
+                self.discord_headers[request_id] = self.discord_headers.get(request_id, {}) | request.get("headers", {})
+        elif event.get("method") == "Network.requestWillBeSentExtraInfo":
+            self.discord_headers[request_id] = params.get("headers", {})
+        if request_id in self.discord_requests:
+            headers = self.discord_headers.get(request_id, {})
+            token = next((v for k, v in headers.items() if k.lower() == "authorization"), None)
+            if isinstance(token, str) and token:
+                self.account_token = token
+        if len(self.discord_headers) > 128:
+            self.discord_headers.clear()
+            self.discord_requests.clear()
+
+    def login_status(self):
+        message = "Open the login browser to manage your saved session."
+        if self.kind == "discord":
+            try:
+                account = json.loads(Path("/tmp/midvox-discord-login.json").read_text(encoding="utf-8"))
+                if isinstance(account, dict) and account.get("login_method") == "browser-v2":
+                    message = f"Selected browser account: {account['username']} ({account['id']}). Sign in again here to change it."
+                else:
+                    message = "No selected browser login. The worker uses USER_TOKEN until you save a new login here."
+            except (OSError, ValueError, KeyError, TypeError):
+                message = "No selected browser login. Sign in and save to choose the bump account."
+        return {"message": message, "running": bool(self.socket and not self.socket.closed)}
 
     async def stop(self):
         if self.session:
@@ -87,6 +125,9 @@ class LoginBrowser:
         if self.profile:
             self.profile.cleanup()
         self.process = self.display = self.profile = self.session = self.socket = None
+        self.account_token = None
+        self.discord_requests.clear()
+        self.discord_headers.clear()
 
     async def screenshot(self):
         # Chromium can briefly refuse capture during the first navigation.
@@ -133,13 +174,13 @@ class LoginBrowser:
                     pages = await response.json()
                 page = next(p for p in pages if p.get("type") == "page")
                 self.socket = await self.session.ws_connect(page["webSocketDebuggerUrl"])
+                await self.command("Network.enable")
                 await self.command("Emulation.setDeviceMetricsOverride", {
                     "width": 1100, "height": 800, "deviceScaleFactor": 1, "mobile": False,
                 })
                 if self.kind == "youtube":
                     # Account management needs no video streams or feed thumbnails.
                     # Keep Google sign-in scripts, images and verification intact.
-                    await self.command("Network.enable")
                     await self.command("Network.setBlockedURLs", {"urls": [
                         "*://*.googlevideo.com/*", "*://i.ytimg.com/*",
                     ]})
@@ -162,7 +203,7 @@ class LoginBrowser:
             try:
                 if request.method == "GET":
                     if not self.socket:
-                        raise ValueError("Open the login browser first.")
+                        raise BrowserUnavailable("Open the login browser first.")
                     shot = await self.screenshot()
                     return web.Response(body=base64.b64decode(shot["data"]), content_type="image/jpeg",
                                         headers={"Cache-Control": "no-store"})
@@ -172,8 +213,10 @@ class LoginBrowser:
                     await self.start()
                 elif action == "stop":
                     await self.stop()
+                elif action == "status":
+                    return web.json_response(self.login_status())
                 elif not self.socket:
-                    raise ValueError("Open the login browser first.")
+                    raise BrowserUnavailable("Open the login browser first.")
                 elif action == "click":
                     point = {"x": max(0, min(1099, float(data["x"]))),
                              "y": max(0, min(799, float(data["y"]))), "button": "left", "clickCount": 1}
@@ -204,11 +247,13 @@ class LoginBrowser:
                 elif action == "save" and self.kind == "discord":
                     # The owner signs in directly on Discord. Keep the resulting
                     # credential server-side; never return it to the dashboard.
-                    stored = await self.command("DOMStorage.getDOMStorageItems", {
+                    await self.command("Network.getAllCookies")  # Drain pending login events.
+                    token = self.account_token
+                    stored = {} if token else await self.command("DOMStorage.getDOMStorageItems", {
                         "storageId": {"securityOrigin": "https://discord.com", "isLocalStorage": True},
                     })
                     entries = dict(stored.get("entries", []))
-                    token = json.loads(entries.get("token", "null"))
+                    token = token or json.loads(entries.get("token", "null"))
                     if not token:
                         tokens = json.loads(entries.get("tokens", "{}"))
                         if isinstance(tokens, dict) and len(tokens) == 1:
@@ -222,11 +267,13 @@ class LoginBrowser:
                         account = await response.json()
                     if account.get("bot"):
                         raise ValueError("Sign in with the account you want to use for bumping.")
-                    contents = json.dumps({"token": token, "id": account["id"], "username": account["username"]})
+                    contents = json.dumps({"token": token, "id": account["id"], "username": account["username"], "login_method": "browser-v2"})
                     from youtube_session_store import transfer
                     path = Path("/tmp/midvox-discord-login.json")
-                    path.write_text(contents, encoding="utf-8")
-                    path.chmod(0o600)
+                    pending = path.with_suffix(".pending")
+                    pending.write_text(contents, encoding="utf-8")
+                    pending.chmod(0o600)
+                    pending.replace(path)
                     backed_up = await asyncio.to_thread(transfer, kind="discord")
                     if not backed_up:
                         raise ValueError("Login saved locally, but encrypted backup is unavailable. Check MongoDB configuration.")
@@ -239,7 +286,7 @@ class LoginBrowser:
                         except ProcessLookupError:
                             pass
                     await self.stop()
-                    return web.json_response({"message": f"Saved Discord account {account['username']}. Bump will use this login instead of USER_TOKEN."})
+                    return web.json_response({"message": f"Saved Discord account {account['username']} ({account['id']}) and encrypted it in MongoDB. Bump will use this login instead of USER_TOKEN within 60 seconds."})
                 elif action == "save":
                     # Navigate back to YouTube before saving to bind the session there.
                     cookies = (await self.command("Network.getAllCookies"))["cookies"]
@@ -261,7 +308,7 @@ class LoginBrowser:
                     return web.json_response({"message": "Session saved and encrypted in MongoDB. It restores after redeploys or hosting changes when you keep the same database, NEXTAUTH_SECRET, and primary OWNER_IDS entry. Cobalt is restarting."})
                 else:
                     raise ValueError("Unsupported action")
-                return web.json_response({"message": "Ready"})
+                return web.json_response(self.login_status())
             except BrowserUnavailable as exc:
                 await self.stop()
                 return web.json_response({"detail": str(exc), "reopen": True}, status=409)
@@ -281,9 +328,19 @@ class LoginBrowser:
 async def main():
     browser = LoginBrowser()
     discord = LoginBrowser("discord")
+    login_lock = asyncio.Lock()
+
+    async def handle_login(request):
+        selected, other = (discord, browser) if request.path == "/discord-browser" else (browser, discord)
+        async with login_lock:
+            if request.method == "POST" and (await request.json()).get("action") == "start":
+                async with other.lock:
+                    await other.stop()
+            return await selected.handle(request)
+
     app = web.Application(client_max_size=8192)
-    app.router.add_route("*", "/browser", browser.handle)
-    app.router.add_route("*", "/discord-browser", discord.handle)
+    app.router.add_route("*", "/browser", handle_login)
+    app.router.add_route("*", "/discord-browser", handle_login)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     await web.TCPSite(runner, "127.0.0.1", 8082).start()

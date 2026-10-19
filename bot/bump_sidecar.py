@@ -11,10 +11,7 @@ from urllib.parse import urlsplit
 import aiohttp
 from desktop_health import DesktopHealth
 from desktop_awake import DesktopAwake
-
-def configured_account_token():
-    # Use the explicitly configured account, never an older browser session.
-    return os.environ.get("USER_TOKEN", "").strip()
+from account_session import configured_account_token, saved_browser_account
 
 
 TOKEN = configured_account_token()
@@ -73,7 +70,7 @@ async def validate_user_token(session: aiohttp.ClientSession) -> None:
         timeout=aiohttp.ClientTimeout(total=15),
     ) as response:
         if response.status == 401:
-            raise InvalidCredential("Discord rejected USER_TOKEN (HTTP 401)")
+            raise InvalidCredential("Discord rejected the selected account login (HTTP 401). Sign in again in Admin Panel > Discord login, or update USER_TOKEN.")
         if response.status != 200:
             # A 403 can come from an edge challenge. Do not call it a revoked
             # credential or permanently disable the worker on that evidence.
@@ -807,7 +804,8 @@ async def supervise(name, coroutine_factory):
 
 if __name__ == "__main__":
     if not TOKEN:
-        raise SystemExit("USER_TOKEN required")
+        print("[user-session] Sign in through Admin Panel > Discord login or configure USER_TOKEN.", flush=True)
+        raise SystemExit(78)
 
     async def main():
         with open("/tmp/midvox-bump-worker.pid", "w") as marker:
@@ -818,6 +816,8 @@ if __name__ == "__main__":
         async with aiohttp.ClientSession() as session:
             await validate_user_token(session)
         print("[user-session] credential accepted; starting independent components", flush=True)
+        account = saved_browser_account()
+        print(f"[user-session] account source: {'saved browser login ' + str(account['id']) if account else 'USER_TOKEN'}", flush=True)
         tasks = [supervise("interaction-gateway", connect_interaction_gateway)]
         if os.getenv("DISCORD_DESKTOP_ENABLED", "false").lower() == "true" and os.path.isfile(DISCORD_DESKTOP):
             tasks.append(supervise("discord-desktop", discord_desktop_client))
