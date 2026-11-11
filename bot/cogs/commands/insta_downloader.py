@@ -51,6 +51,9 @@ class InstaDownloader(commands.Cog):
         self._hosted_downloads = HostedDownloads()
         self._failed_downloads = set()
         self._pending_downloads = set()
+        self._handled_messages = set()
+        self._recent_posts = {}
+        self._duplicate_window = 120
         self._last_cobalt_error = None
 
     @property
@@ -328,6 +331,15 @@ class InstaDownloader(commands.Cog):
                 return
             source, url, media_id = media
 
+            # Discord can redeliver MESSAGE_CREATE after a gateway resume, and
+            # a rolling deploy briefly runs two bot containers. Remember the
+            # message ID so one link is not downloaded twice by this process.
+            if message.id in self._handled_messages:
+                return
+            self._handled_messages.add(message.id)
+            if len(self._handled_messages) > 4096:
+                self._handled_messages.clear()
+
             print(f"[InstaDL] downloading {source} url {url} for guild {message.guild.id}")
             await self._download_and_send(message, url, config, source)
         except Exception as e:
@@ -491,6 +503,23 @@ class InstaDownloader(commands.Cog):
 
     async def _download_and_send(self, message, url, config, source="instagram"):
         """Delete the source link first, then download and repost the media."""
+        failure_key = f"{message.guild.id}:{source}:{url}"
+        posted_at = self._recent_posts.get(failure_key)
+        if posted_at and time.monotonic() - posted_at < self._duplicate_window:
+            print(f"[InstaDL] ignoring duplicate {source} link (already posted)")
+            return
+        if failure_key in self._pending_downloads:
+            print(f"[InstaDL] ignoring duplicate {source} link (already downloading)")
+            if config.get("delete_original"):
+                try:
+                    await message.delete()
+                except Exception:
+                    pass
+            return
+        # Claim the media before the first await so a second event cannot start
+        # another download while this one is still in flight.
+        self._pending_downloads.add(failure_key)
+
         status = await self._send_status(
             message.channel, "Downloading ⏳", reference=None, auto_delete=0
         )
@@ -502,14 +531,12 @@ class InstaDownloader(commands.Cog):
                 self._animate_loading(status)
             )
 
-        failure_key = f"{message.guild.id}:{source}:{url}"
-        previously_failed = failure_key in self._failed_downloads or failure_key in self._pending_downloads
+        previously_failed = failure_key in self._failed_downloads
         if self.mongo and not previously_failed:
             try:
                 previously_failed = bool(await self.mongo.media_download_failures.find_one({"_id": failure_key}))
             except Exception:
                 previously_failed = True
-        self._pending_downloads.add(failure_key)
         if config.get("delete_original") and not previously_failed:
             try:
                 await message.delete()
@@ -535,6 +562,13 @@ class InstaDownloader(commands.Cog):
             self._pending_downloads.discard(failure_key)
             if succeeded:
                 self._failed_downloads.discard(failure_key)
+                if len(self._recent_posts) >= 512:
+                    cutoff = time.monotonic() - self._duplicate_window
+                    self._recent_posts = {
+                        key: stamp for key, stamp in self._recent_posts.items()
+                        if stamp >= cutoff
+                    }
+                self._recent_posts[failure_key] = time.monotonic()
             else:
                 if len(self._failed_downloads) >= 2048:
                     self._failed_downloads.pop()
@@ -577,9 +611,25 @@ class InstaDownloader(commands.Cog):
         if cobalt_error and cobalt_error.user_message:
             text = cobalt_error.user_message
         elif ytdlp_error:
-            reason = str(ytdlp_error).strip()
-            lowered = reason.lower()
-            if any(term in lowered for term in (
+            lowered = str(ytdlp_error).lower()
+            if source == "instagram" and any(term in lowered for term in (
+                "login", "rate-limit", "rate limit", "empty media response",
+                "redirected", "checkpoint", "cookies",
+            )):
+                if instagram_cookie_header():
+                    text = (
+                        "Instagram refused the download even with the saved "
+                        "session. The session may have expired; refresh "
+                        "`INSTAGRAM_COOKIES` in Railway Variables or try again "
+                        "later."
+                    )
+                else:
+                    text = (
+                        "Instagram is blocking anonymous Reel downloads. Add "
+                        "`INSTAGRAM_COOKIES` in Railway Variables to download "
+                        "with a session, or try this link again later."
+                    )
+            elif any(term in lowered for term in (
                 "login", "sign in", "confirm you", "bot check", "cookies",
             )):
                 text = (
@@ -594,7 +644,7 @@ class InstaDownloader(commands.Cog):
                     "or restricted for the bot's connection."
                 )
             else:
-                text = f"Couldn't download that link: `{reason[:300]}`"
+                text = "Couldn't download that link right now. Try again shortly."
         else:
             text = "Couldn't download that link right now. Try again shortly."
         await self._send_status(message.channel, text, reference=message)

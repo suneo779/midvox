@@ -131,6 +131,10 @@ JSON export, a base64 Netscape export, or a path to a `cookies.txt` file:
 
 Instagram Reels additionally fall back to Instagram's public embed page, which
 often works without a session even when its private API rate-limits the bot.
+`INSTAGRAM_COOKIES` is also loaded into the local Cobalt sidecar at startup, so
+the same session covers Cobalt, yt-dlp, and the embed route. When Instagram
+blocks anonymous downloads, the bot reports that a session is required instead
+of repeating the raw extractor error.
 
 <details>
 <summary><strong>Optional variables</strong></summary>

@@ -1,6 +1,7 @@
 """Exercise the actual deletion wrapper without importing Discord dependencies."""
 import ast
 import asyncio
+import time
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -10,13 +11,14 @@ source = Path(__file__).resolve().parents[1] / "cogs/commands/insta_downloader.p
 tree = ast.parse(source.read_text(encoding="utf-8"))
 cog = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "InstaDownloader")
 wrapper = next(node for node in cog.body if getattr(node, "name", "") == "_download_and_send")
-namespace = {"asyncio": asyncio}
+namespace = {"asyncio": asyncio, "time": time}
 exec(compile(ast.Module(body=[wrapper], type_ignores=[]), str(source), "exec"), namespace)
 
 
 class FailureHistoryTests(unittest.IsolatedAsyncioTestCase):
     def setup_bot(self, mongo=None):
         return SimpleNamespace(mongo=mongo, _failed_downloads=set(), _pending_downloads=set(),
+                               _recent_posts={}, _duplicate_window=120,
                                _download_lock=asyncio.Lock(),
                                _send_status=AsyncMock(return_value=None),
                                _download_and_send_inner=AsyncMock(return_value=False))
@@ -58,6 +60,41 @@ class FailureHistoryTests(unittest.IsolatedAsyncioTestCase):
         await namespace["_download_and_send"](bot, message, "canonical-short", {"delete_original": True}, "youtube")
         message.delete.assert_not_awaited()
         collection.update_one.assert_awaited_once()
+
+    async def test_duplicate_link_while_downloading_is_ignored(self):
+        bot = self.setup_bot()
+        started = asyncio.Event()
+        release = asyncio.Event()
+        calls = []
+
+        async def download(*args):
+            calls.append(1)
+            started.set()
+            await release.wait()
+            return True
+
+        bot._download_and_send_inner.side_effect = download
+        first = asyncio.create_task(namespace["_download_and_send"](
+            bot, self.message(), "same-reel", {"delete_original": False},
+        ))
+        await started.wait()
+        second = asyncio.create_task(namespace["_download_and_send"](
+            bot, self.message(), "same-reel", {"delete_original": False},
+        ))
+        await asyncio.sleep(0)
+        release.set()
+        await asyncio.gather(first, second)
+        self.assertEqual(len(calls), 1)
+
+    async def test_recent_success_is_not_reposted(self):
+        bot = self.setup_bot()
+        bot._download_and_send_inner.return_value = True
+        message = self.message()
+        for _ in range(2):
+            await namespace["_download_and_send"](
+                bot, message, "same-reel", {"delete_original": False},
+            )
+        bot._download_and_send_inner.assert_awaited_once()
 
     async def test_success_clears_failed_history_and_opt_out_preserves_link(self):
         collection = SimpleNamespace(find_one=AsyncMock(return_value=None), delete_one=AsyncMock())

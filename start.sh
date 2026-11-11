@@ -222,6 +222,10 @@ export COOKIE_PATH="/tmp/midvox-youtube-cookies.json"
 if [ ! -f "$COOKIE_PATH" ]; then
   (umask 077; printf '{}' > "$COOKIE_PATH")
 fi
+# Cobalt reads cookies only at startup. Add the owner's Instagram session (if
+# configured) before the sidecar starts so Reels can use an authenticated
+# request instead of Instagram's anonymous rate limiter.
+timeout 20s python "$ROOT/bot/cobalt_cookies.py" || echo "WARNING: Instagram cookie handoff failed; continuing startup."
 python /opt/youtube-session/login.py &
 YT_LOGIN_PID=$!
 echo "YouTube owner login available at /dashboard/youtube-login."

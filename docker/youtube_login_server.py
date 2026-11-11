@@ -291,7 +291,16 @@ class LoginBrowser:
                     # Navigate back to YouTube before saving to bind the session there.
                     cookies = (await self.command("Network.getAllCookies"))["cookies"]
                     header = youtube_cookie_header(cookies)
-                    COOKIE_FILE.write_text(json.dumps({"youtube": [header]}), encoding="utf-8")
+                    # Cobalt also reads Instagram cookies from this file; keep
+                    # them when the owner refreshes the YouTube session.
+                    try:
+                        store = json.loads(COOKIE_FILE.read_text(encoding="utf-8"))
+                    except (OSError, ValueError):
+                        store = {}
+                    if not isinstance(store, dict):
+                        store = {}
+                    store["youtube"] = [header]
+                    COOKIE_FILE.write_text(json.dumps(store), encoding="utf-8")
                     COOKIE_FILE.chmod(0o600)
                     try:
                         from youtube_session_store import transfer

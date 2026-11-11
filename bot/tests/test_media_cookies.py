@@ -79,6 +79,18 @@ class CookieConversionTests(unittest.TestCase):
             with patch.dict(os.environ, {"INSTAGRAM_COOKIE_FILE": path}, clear=True):
                 self.assertEqual(instagram_cookie_header(), "sessionid=abc")
 
+    def test_instagram_header_drops_cookies_for_other_domains(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "instagram.txt")
+            with open(path, "w", encoding="utf-8") as output:
+                output.write(
+                    "# Netscape HTTP Cookie File\n"
+                    ".instagram.com\tTRUE\t/\tTRUE\t0\tsessionid\tabc\n"
+                    ".youtube.com\tTRUE\t/\tTRUE\t0\tSID\tsecret\n"
+                )
+            with patch.dict(os.environ, {"INSTAGRAM_COOKIE_FILE": path}, clear=True):
+                self.assertEqual(instagram_cookie_header(), "sessionid=abc")
+
 
 if __name__ == "__main__":
     unittest.main()

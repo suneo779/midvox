@@ -193,7 +193,9 @@ def instagram_cookie_header():
             continue
         fields = line.split("\t")
         if len(fields) == 7:
-            pairs.append(f"{fields[5]}={fields[6]}")
+            domain = fields[0].lstrip("#").lstrip(".").lower()
+            if domain == "instagram.com" or domain.endswith(".instagram.com"):
+                pairs.append(f"{fields[5]}={fields[6]}")
     return "; ".join(pairs)
 
 
