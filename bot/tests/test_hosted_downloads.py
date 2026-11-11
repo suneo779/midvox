@@ -23,15 +23,13 @@ class HostedDownloadTests(unittest.TestCase):
 
     def test_empty_file_is_rejected_and_removed(self):
         with patch("hosted_downloads.urllib.request.urlopen", side_effect=[Response(), Response()]), patch("hosted_downloads.os.unlink") as cleanup:
-            with self.assertRaises(ValueError):
-                HostedDownloads._media("https://provider.example/video", 100, time.monotonic() + 10)
+            self.assertIsNone(HostedDownloads._media("https://provider.example/video", 100, time.monotonic() + 10))
             path = cleanup.call_args.args[0]
         os.unlink(path)
 
     def test_rejects_html_error_with_success_status(self):
         with patch("hosted_downloads.urllib.request.urlopen", side_effect=[Response(), Response(b"<html>error</html>")]):
-            with self.assertRaises(ValueError):
-                HostedDownloads._media("https://provider.example/video", 100, time.monotonic() + 10)
+            self.assertIsNone(HostedDownloads._media("https://provider.example/video", 100, time.monotonic() + 10))
 
     def test_writes_valid_mp4(self):
         content = b"\x00\x00\x00\x18ftypisom" + b"\x00" * 30

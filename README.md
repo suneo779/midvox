@@ -111,11 +111,26 @@ in Railway Variables):
 [{"url":"https://your-provider.example","api_key":"your-key"}]
 ```
 
-Up to three providers run in order before local Cobalt. Authentication uses
+Up to three providers are tried after local Cobalt. Authentication uses
 Cobalt's `Api-Key` scheme; omit `api_key` only for APIs that permit unauthenticated
 requests. Oversized formats are skipped or stopped, empty/invalid files are
 rejected, temporary files are cleaned up, and failed providers pause for five
 minutes. No public instance is assumed reliable or added automatically.
+
+If Cobalt is blocked, the downloader falls back to `yt-dlp`. Public posts work
+without credentials, but a browser session raises the success rate from
+datacenter IPs. These variables accept a raw `Cookie` header, a Cookie-Editor
+JSON export, a base64 Netscape export, or a path to a `cookies.txt` file:
+
+| Variable | Purpose |
+| :--- | :--- |
+| `YT_COOKIES` / `YOUTUBE_COOKIES` | YouTube session for the yt-dlp fallback |
+| `INSTAGRAM_COOKIES` / `IG_COOKIES` | Instagram session for yt-dlp and the embed fallback |
+| `INSTAGRAM_COOKIE_FILE` / `IG_COOKIE_FILE` | Path to a Netscape Instagram cookie file |
+| `INSTAGRAM_USERNAME` / `INSTAGRAM_PASSWORD` | Optional Instagram login for yt-dlp |
+
+Instagram Reels additionally fall back to Instagram's public embed page, which
+often works without a session even when its private API rate-limits the bot.
 
 <details>
 <summary><strong>Optional variables</strong></summary>
@@ -125,7 +140,8 @@ minutes. No public instance is assumed reliable or added automatically.
 | `PORT` | `8080` | Public dashboard port |
 | `API_PORT` | `5001` | Internal bot API port |
 | `COBALT_PUBLIC_URL` | local URL | Public base URL generated for Cobalt when required |
-| `WARP` | `1` | Enables private WARP egress for datacenter media requests |
+| `COBALT_WARP` | `0` | Routes Cobalt through private WARP egress (`WARP=1` is also accepted) |
+| `COBALT_HOSTED_PROVIDERS` | `[]` | JSON array of independent Cobalt API endpoints |
 | `EMOJI_SYNC` | `false` | Enables startup emoji synchronization |
 | `SUPPORT_URL` | repository URL | Support link shown by bot commands |
 

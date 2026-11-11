@@ -12,6 +12,31 @@ def upload_budget(configured, guild_limit=None):
     return min(configured, int(guild_limit * 0.98)) if guild_limit else configured
 
 
+def is_valid_video(path):
+    """Reject HTML/JSON error bodies saved with a .mp4 name."""
+    try:
+        if os.path.getsize(path) < 1024:
+            return False
+        with open(path, "rb") as media:
+            head = media.read(12)
+    except OSError:
+        return False
+    return head[4:8] == b"ftyp" or head[:4] == b"\x1aE\xdf\xa3"
+
+
+def _codec_rank(fmt):
+    codec = str(fmt.get("vcodec") or "").lower()
+    # Prefer formats Discord clients play everywhere, then fall back to
+    # increasingly efficient codecs only when H.264 is unavailable.
+    if codec.startswith("avc") or codec.startswith("h264"):
+        return 3
+    if codec.startswith("vp9") or codec.startswith("vp09"):
+        return 2
+    if codec.startswith("av01") or codec.startswith("av1"):
+        return 1
+    return 0
+
+
 def fitting_formats(info, limit):
     candidates = []
     for fmt in info.get("formats") or [info]:
@@ -25,7 +50,7 @@ def fitting_formats(info, limit):
         candidates.append(fmt)
     return sorted(candidates, key=lambda f: (
         f.get("height") or 0, f.get("width") or 0,
-        f.get("fps") or 0, f.get("tbr") or 0,
+        f.get("fps") or 0, _codec_rank(f), f.get("tbr") or 0,
     ), reverse=True)
 
 
@@ -33,12 +58,24 @@ def download_fitting_video(ydl, url, limit, *, compress=False):
     info = ydl.extract_info(url, download=False)
     for fmt in fitting_formats(info, limit):
         selected = dict(info, formats=[fmt])
-        result = ydl.process_ie_result(selected, download=True)
-        path = ydl.prepare_filename(result)
+        path = None
+        try:
+            result = ydl.process_ie_result(selected, download=True)
+            path = ydl.prepare_filename(result) if result else None
+        except Exception as error:
+            print(f"[InstaDL] yt-dlp format failed: {type(error).__name__}")
+            continue
         if path and os.path.isfile(path):
-            if 0 < os.path.getsize(path) <= limit:
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                size = 0
+            if 0 < size <= limit:
                 return path
-            os.remove(path)
+            try:
+                os.remove(path)
+            except OSError:
+                pass
     if compress:
         # Instagram can expose one oversized rendition with no lower qualities.
         # Download only the smallest complete source, then encode it to budget.
@@ -54,18 +91,28 @@ def download_fitting_video(ydl, url, limit, *, compress=False):
             previous = ydl.params.get("max_filesize")
             try:
                 ydl.params["max_filesize"] = source_limit
-                result = ydl.process_ie_result(dict(info, formats=[fmt]), download=True)
-                path = ydl.prepare_filename(result)
+                try:
+                    result = ydl.process_ie_result(dict(info, formats=[fmt]), download=True)
+                    path = ydl.prepare_filename(result) if result else None
+                except Exception as error:
+                    print(f"[InstaDL] yt-dlp compress source failed: {type(error).__name__}")
+                    path = None
                 if path and os.path.isfile(path):
                     try:
-                        if 0 < os.path.getsize(path) <= limit:
+                        size = os.path.getsize(path)
+                    except OSError:
+                        size = 0
+                    try:
+                        if 0 < size <= limit:
                             return path
-                        if os.path.getsize(path) <= source_limit:
+                        if 0 < size <= source_limit:
                             return compress_to_budget(path, limit)
-                        return None
                     finally:
-                        if os.path.exists(path) and not 0 < os.path.getsize(path) <= limit:
-                            os.remove(path)
+                        if os.path.exists(path) and not 0 < size <= limit:
+                            try:
+                                os.remove(path)
+                            except OSError:
+                                pass
             finally:
                 if previous is None:
                     ydl.params.pop("max_filesize", None)
@@ -101,10 +148,10 @@ def compress_to_budget(path, limit):
                       "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
                       "-b:v", str(video_bitrate), "-threads", "2", "-passlogfile", os.path.join(work, "pass")]
             subprocess.run(common + ["-pass", "1", "-an", "-f", "null", os.devnull],
-                           capture_output=True, check=True, timeout=90)
+                           capture_output=True, check=True, timeout=180)
             subprocess.run(common + ["-pass", "2", "-map", "0:a:0?", "-c:a", "aac",
                            "-b:a", str(audio_bitrate), "-movflags", "+faststart", output],
-                           capture_output=True, check=True, timeout=90)
+                           capture_output=True, check=True, timeout=180)
         if 0 < os.path.getsize(output) <= limit:
             result, output = output, None
             return result

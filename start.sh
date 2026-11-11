@@ -147,7 +147,7 @@ EOF
 # A locally generated PoToken is designed for the same datacenter IP used by
 # Cobalt. WARP remains an opt-in fallback, because its shared proxy can accept
 # token generation yet fail the later media fetch.
-if [ "${COBALT_WARP:-0}" = "1" ]; then
+if [ "${COBALT_WARP:-${WARP:-0}}" = "1" ]; then
   setup_warp || true
 else
   unset COBALT_PROXY_URL
@@ -243,7 +243,7 @@ echo "Starting local Cobalt sidecar on port 9000..."
       API_URL="${COBALT_PUBLIC_URL:-http://127.0.0.1:9000/}" \
       API_PORT=9000 API_LISTEN_ADDRESS=127.0.0.1 \
       API_INSTANCE_COUNT=1 API_AUTH_REQUIRED=0 \
-      RATELIMIT_MAX=120 \
+      RATELIMIT_MAX=600 \
       CUSTOM_INNERTUBE_CLIENT="$COBALT_YOUTUBE_CLIENT" \
       YOUTUBE_SESSION_SERVER="$YOUTUBE_SESSION_SERVER" \
       YOUTUBE_SESSION_INNERTUBE_CLIENT="$YOUTUBE_SESSION_INNERTUBE_CLIENT" \

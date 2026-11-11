@@ -23,18 +23,19 @@ class HostedDownloads:
             result = []
             for index, entry in enumerate(entries[:3]):
                 if not isinstance(entry, dict):
-                    raise ValueError
-                endpoint = entry.get("url", "").strip().rstrip("/")
+                    continue
+                endpoint = str(entry.get("url") or "").strip().rstrip("/")
                 parsed = urllib.parse.urlsplit(endpoint)
                 if parsed.scheme != "https" or not parsed.hostname or parsed.username:
-                    raise ValueError
-                result.append((index, endpoint, entry.get("api_key", "")))
+                    continue
+                key = entry.get("api_key", "")
+                result.append((index, endpoint, key if isinstance(key, str) else ""))
             return result
         except (ValueError, TypeError, AttributeError):
             print("[InstaDL] invalid COBALT_HOSTED_PROVIDERS configuration")
             return []
 
-    def download(self, url, limit):
+    def download(self, url, limit, source="youtube"):
         deadline = time.monotonic() + 90
         for index, endpoint, key in self.providers():
             if self.cooldowns.get(endpoint, 0) > time.monotonic():
@@ -46,23 +47,56 @@ class HostedDownloads:
                     headers = {"Accept": "application/json", "Content-Type": "application/json"}
                     if key:
                         headers["Authorization"] = "Api-Key " + key
-                    payload = json.dumps({
-                        "url": url, "videoQuality": quality,
-                        "youtubeVideoCodec": "h264", "downloadMode": "auto",
+                    payload = {
+                        "url": url,
+                        "videoQuality": quality,
+                        # Keep the provider in the media path so the bot never
+                        # follows a redirect signed for the provider's IP.
+                        "alwaysProxy": True,
                         "localProcessing": "disabled",
-                    }).encode()
-                    request = urllib.request.Request(endpoint, data=payload, headers=headers)
+                    }
+                    if source == "youtube":
+                        payload.update({
+                            "youtubeVideoCodec": "h264",
+                            "youtubeVideoContainer": "mp4",
+                        })
+                    request = urllib.request.Request(
+                        endpoint, data=json.dumps(payload).encode(), headers=headers
+                    )
                     with urllib.request.urlopen(request, timeout=15) as response:
                         data = json.loads(response.read(256 * 1024))
-                    if data.get("status") not in ("tunnel", "redirect") or not data.get("url"):
-                        break
-                    path = self._media(data["url"], limit, deadline)
-                    if path:
-                        self.cooldowns.pop(endpoint, None)
-                        print(f"[InstaDL] hosted provider {index + 1} downloaded {quality}")
-                        return path
-                    # None means oversized; try a lower quality without
-                    # downloading an oversized file to completion.
+                    status = data.get("status") if isinstance(data, dict) else None
+                    media_url = data.get("url") if isinstance(data, dict) else None
+                    media_headers = {}
+                    if key and media_url:
+                        # Never send a provider's API key to another host
+                        # (e.g. a googlevideo URL when alwaysProxy is ignored).
+                        if urllib.parse.urlsplit(media_url).hostname == urllib.parse.urlsplit(endpoint).hostname:
+                            media_headers["Authorization"] = "Api-Key " + key
+                    if status in ("tunnel", "redirect") and media_url:
+                        path = self._media(
+                            media_url, limit, deadline,
+                            source=source, headers=media_headers,
+                        )
+                        if path:
+                            self.cooldowns.pop(endpoint, None)
+                            print(f"[InstaDL] hosted provider {index + 1} downloaded {quality}")
+                            return path
+                        # None means oversized or invalid; try a lower quality
+                        # without downloading an oversized file to completion.
+                    elif status == "picker":
+                        for item in data.get("picker") or []:
+                            if not isinstance(item, dict) or item.get("type") != "video":
+                                continue
+                            item_url = item.get("url")
+                            if not item_url:
+                                continue
+                            path = self._media(
+                                item_url, limit, deadline,
+                                source=source, headers=media_headers,
+                            )
+                            if path:
+                                return path
             except Exception as error:
                 # Do not print URLs, response bodies or credentials. Provider
                 # exceptions can contain signed URLs or authentication data.
@@ -71,11 +105,21 @@ class HostedDownloads:
         return None
 
     @staticmethod
-    def _media(url, limit, deadline):
-        if urllib.parse.urlsplit(url).scheme != "https":
-            raise ValueError("invalid media URL")
+    def _media(url, limit, deadline, *, source="youtube", headers=None):
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            print("[InstaDL] hosted provider returned an invalid media URL")
+            return None
+        request_headers = {"User-Agent": "MidVox/1.0"}
+        if source == "instagram":
+            request_headers["Referer"] = "https://www.instagram.com/"
+        if headers:
+            request_headers.update(headers)
         try:
-            with urllib.request.urlopen(urllib.request.Request(url, method="HEAD"), timeout=10) as response:
+            with urllib.request.urlopen(
+                urllib.request.Request(url, method="HEAD", headers=request_headers),
+                timeout=10,
+            ) as response:
                 # Estimated-Content-Length is advisory and can overestimate.
                 length = response.headers.get("Content-Length", "")
                 if length.isdigit() and int(length) > limit:
@@ -85,7 +129,9 @@ class HostedDownloads:
         path = None
         keep = False
         try:
-            with urllib.request.urlopen(url, timeout=20) as response:
+            with urllib.request.urlopen(
+                urllib.request.Request(url, headers=request_headers), timeout=30
+            ) as response:
                 with tempfile.NamedTemporaryFile(prefix="midvox_hosted_", suffix=".mp4", delete=False) as output:
                     path = output.name
                     size = 0
@@ -97,19 +143,31 @@ class HostedDownloads:
                         if not chunk:
                             break
                         if first:
-                            # MP4/M4A starts with a file-type box; reject HTML,
-                            # JSON error pages and arbitrary provider output.
-                            if len(chunk) < 12 or chunk[4:8] != b"ftyp":
-                                raise ValueError("invalid media")
+                            # MP4/M4A starts with a file-type box and WebM
+                            # starts with an EBML header; reject HTML, JSON
+                            # error pages and arbitrary provider output.
+                            if not (
+                                len(chunk) >= 12
+                                and (chunk[4:8] == b"ftyp" or chunk[:4] == b"\x1aE\xdf\xa3")
+                            ):
+                                print("[InstaDL] hosted provider returned non-video data")
+                                return None
                             first = False
                         size += len(chunk)
                         if size > limit:
                             return None
                         output.write(chunk)
                     if size == 0:
-                        raise ValueError("empty media")
+                        print("[InstaDL] hosted provider returned an empty file")
+                        return None
                     keep = True
                     return path
+        except urllib.error.HTTPError as error:
+            # A signed tunnel URL can expire between the API response and the
+            # media request; try the next quality/provider instead of cooling
+            # down an otherwise healthy provider.
+            print(f"[InstaDL] hosted provider media HTTP {error.code}")
+            return None
         finally:
             if path and not keep:
                 os.unlink(path)

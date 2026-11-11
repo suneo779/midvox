@@ -32,3 +32,9 @@ class CobaltErrorTests(unittest.TestCase):
     def test_unknown_and_empty_errors_keep_generic_handling(self):
         self.assertIsNone(extraction_error([]))
         self.assertIsNone(extraction_error(["error.api.youtube.api_error"]))
+
+    def test_instagram_fetch_fail_does_not_blame_youtube(self):
+        error = extraction_error(["error.api.fetch.fail"], source="instagram")
+        self.assertIn("Instagram", error.user_message)
+        self.assertNotIn("YouTube", error.user_message)
+        self.assertIn("INSTAGRAM_COOKIES", error.user_message)

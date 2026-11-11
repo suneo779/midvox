@@ -2,7 +2,7 @@ import os
 import tempfile
 import unittest
 from unittest.mock import patch
-from media_quality import download_fitting_video, fitting_formats, upload_budget
+from media_quality import download_fitting_video, fitting_formats, is_valid_video, upload_budget
 
 
 class MediaQualityTests(unittest.TestCase):
@@ -96,6 +96,24 @@ class MediaQualityTests(unittest.TestCase):
     def test_server_limit_and_configured_cap(self):
         self.assertEqual(upload_budget(9500000, 8000000), 7840000)
         self.assertEqual(upload_budget(9500000, 50000000), 9500000)
+
+    def test_rejects_html_saved_as_video(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "error.mp4")
+            with open(path, "wb") as output:
+                output.write(b"<html>error</html>" * 100)
+            self.assertFalse(is_valid_video(path))
+
+    def test_accepts_mp4_and_webm_headers(self):
+        with tempfile.TemporaryDirectory() as folder:
+            mp4 = os.path.join(folder, "ok.mp4")
+            webm = os.path.join(folder, "ok.webm")
+            with open(mp4, "wb") as output:
+                output.write(b"\x00\x00\x00\x18ftypisom" + b"\x00" * 2000)
+            with open(webm, "wb") as output:
+                output.write(b"\x1aE\xdf\xa3" + b"\x00" * 2000)
+            self.assertTrue(is_valid_video(mp4))
+            self.assertTrue(is_valid_video(webm))
 
 
 if __name__ == "__main__":
