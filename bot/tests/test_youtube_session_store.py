@@ -82,3 +82,33 @@ class SessionStoreTests(unittest.TestCase):
             with patch.dict(os.environ, {"DISCORD_CLIENT_ID": "new-application"}):
                 self.assertTrue(store.transfer(restore=True, kind="discord"))
         self.assertEqual(self.path.read_text(), contents)
+
+    def test_instagram_restore_does_not_overwrite_a_newer_youtube_login(self):
+        self.path.write_text(json.dumps({
+            "youtube": ["SID=youtube-before"],
+            "instagram": ["sessionid=instagram-backup"],
+        }))
+        self.assertTrue(store.transfer(kind="instagram"))
+        self.path.write_text(json.dumps({
+            "youtube": ["SID=youtube-after"],
+            "instagram": ["sessionid=instagram-old"],
+        }))
+        self.assertTrue(store.transfer(restore=True, kind="instagram"))
+        saved = json.loads(self.path.read_text())
+        self.assertEqual(saved["youtube"], ["SID=youtube-after"])
+        self.assertEqual(saved["instagram"], ["sessionid=instagram-backup"])
+
+    def test_youtube_restore_keeps_the_instagram_session(self):
+        self.path.write_text(json.dumps({
+            "youtube": ["SID=youtube-backup"],
+            "instagram": ["sessionid=instagram-before"],
+        }))
+        self.assertTrue(store.transfer(kind="youtube"))
+        self.path.write_text(json.dumps({
+            "youtube": ["SID=youtube-old"],
+            "instagram": ["sessionid=instagram-after"],
+        }))
+        self.assertTrue(store.transfer(restore=True, kind="youtube"))
+        saved = json.loads(self.path.read_text())
+        self.assertEqual(saved["youtube"], ["SID=youtube-backup"])
+        self.assertEqual(saved["instagram"], ["sessionid=instagram-after"])

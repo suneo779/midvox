@@ -8,6 +8,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from media_quality import source_cap
+
 
 class HostedDownloads:
     def __init__(self):
@@ -37,13 +39,14 @@ class HostedDownloads:
 
     def download(self, url, limit, source="youtube"):
         deadline = time.monotonic() + 90
+        smallest_oversized = None
         for index, endpoint, key in self.providers():
             if self.cooldowns.get(endpoint, 0) > time.monotonic():
                 continue
             try:
                 for quality in ("max", "1080", "720", "480", "360", "240"):
                     if time.monotonic() >= deadline:
-                        return None
+                        break
                     headers = {"Accept": "application/json", "Content-Type": "application/json"}
                     if key:
                         headers["Authorization"] = "Api-Key " + key
@@ -79,11 +82,23 @@ class HostedDownloads:
                             source=source, headers=media_headers,
                         )
                         if path:
-                            self.cooldowns.pop(endpoint, None)
-                            print(f"[InstaDL] hosted provider {index + 1} downloaded {quality}")
-                            return path
-                        # None means oversized or invalid; try a lower quality
-                        # without downloading an oversized file to completion.
+                            try:
+                                size = os.path.getsize(path)
+                            except OSError:
+                                size = 0
+                            if size <= limit:
+                                if smallest_oversized:
+                                    self._remove(smallest_oversized)
+                                self.cooldowns.pop(endpoint, None)
+                                print(f"[InstaDL] hosted provider {index + 1} downloaded {quality}")
+                                return path
+                            if size:
+                                print(f"[InstaDL] hosted provider {index + 1} {quality} is {size} bytes; keeping it for compression")
+                                smallest_oversized = self._smaller_source(
+                                    smallest_oversized, path
+                                )
+                        # None means invalid or too large to compress; try a
+                        # lower quality without downloading an oversized file.
                     elif status == "picker":
                         for item in data.get("picker") or []:
                             if not isinstance(item, dict) or item.get("type") != "video":
@@ -96,13 +111,59 @@ class HostedDownloads:
                                 source=source, headers=media_headers,
                             )
                             if path:
-                                return path
+                                try:
+                                    size = os.path.getsize(path)
+                                except OSError:
+                                    size = 0
+                                if size <= limit:
+                                    if smallest_oversized:
+                                        self._remove(smallest_oversized)
+                                    return path
+                                if size:
+                                    smallest_oversized = self._smaller_source(
+                                        smallest_oversized, path
+                                    )
             except Exception as error:
                 # Do not print URLs, response bodies or credentials. Provider
                 # exceptions can contain signed URLs or authentication data.
                 print(f"[InstaDL] hosted provider {index + 1} failed: {type(error).__name__}")
                 self.cooldowns[endpoint] = time.monotonic() + 300
+            if time.monotonic() >= deadline:
+                break
+        if smallest_oversized:
+            try:
+                size = os.path.getsize(smallest_oversized)
+            except OSError:
+                size = 0
+            if size:
+                print(f"[InstaDL] hosted provider returning {size}-byte source for compression")
+                return smallest_oversized
+            self._remove(smallest_oversized)
         return None
+
+    @staticmethod
+    def _remove(path):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+    @classmethod
+    def _smaller_source(cls, current, candidate):
+        try:
+            candidate_size = os.path.getsize(candidate)
+        except OSError:
+            return current
+        if current:
+            try:
+                current_size = os.path.getsize(current)
+            except OSError:
+                current_size = None
+            if current_size is not None and current_size <= candidate_size:
+                cls._remove(candidate)
+                return current
+            cls._remove(current)
+        return candidate
 
     @staticmethod
     def _media(url, limit, deadline, *, source="youtube", headers=None):
@@ -110,6 +171,10 @@ class HostedDownloads:
         if parsed.scheme not in ("http", "https") or not parsed.hostname:
             print("[InstaDL] hosted provider returned an invalid media URL")
             return None
+        try:
+            cap = source_cap(limit)
+        except (TypeError, ValueError):
+            cap = max(limit, 104857600)
         request_headers = {"User-Agent": "MidVox/1.0"}
         if source == "instagram":
             request_headers["Referer"] = "https://www.instagram.com/"
@@ -122,7 +187,7 @@ class HostedDownloads:
             ) as response:
                 # Estimated-Content-Length is advisory and can overestimate.
                 length = response.headers.get("Content-Length", "")
-                if length.isdigit() and int(length) > limit:
+                if length.isdigit() and int(length) > cap:
                     return None
         except (urllib.error.URLError, TimeoutError):
             pass
@@ -154,7 +219,7 @@ class HostedDownloads:
                                 return None
                             first = False
                         size += len(chunk)
-                        if size > limit:
+                        if size > cap:
                             return None
                         output.write(chunk)
                     if size == 0:

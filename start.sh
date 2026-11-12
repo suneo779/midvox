@@ -82,7 +82,7 @@ rm -f "$USER_DESKTOP_READY_FILE" "$USER_GATEWAY_READY_FILE"
 BUMP_PID=""
 # Restore encrypted owner logins before starting the optional account worker.
 export COOKIE_PATH=/tmp/midvox-youtube-cookies.json
-timeout 20s python /opt/youtube-session/youtube_session_store.py || echo "WARNING: Login restore timed out; continuing startup."
+timeout 40s python /opt/youtube-session/youtube_session_store.py || echo "WARNING: Login restore timed out; continuing startup."
 echo "Starting optional account supervisor in the background..."
 (
   cd "$ROOT/bot" || exit 1
@@ -228,7 +228,7 @@ fi
 timeout 20s python "$ROOT/bot/cobalt_cookies.py" || echo "WARNING: Instagram cookie handoff failed; continuing startup."
 python /opt/youtube-session/login.py &
 YT_LOGIN_PID=$!
-echo "YouTube owner login available at /dashboard/youtube-login."
+echo "Owner logins available at /dashboard/youtube-login and /dashboard/instagram-login."
 export COBALT_YOUTUBE_CLIENT="${COBALT_YOUTUBE_CLIENT:-IOS}"
 echo "Cobalt YouTube client: $COBALT_YOUTUBE_CLIENT"
 

@@ -41,8 +41,28 @@ class InstagramEmbedTests(unittest.TestCase):
         page = Response(b"<html>embed</html>")
         media = Response(b"<html>not a video</html>" * 100)
         with patch("instagram_embed.urllib.request.urlopen", side_effect=[page, media]), \
-             patch("instagram_embed.video_url_from_html", return_value="https://cdn.example/x.mp4"):
+             patch("instagram_embed.video_url_from_html", return_value="https://scontent.cdninstagram.com/x.mp4"):
             self.assertIsNone(download("abc", 100000))
+
+    def test_download_refuses_a_foreign_media_host(self):
+        from instagram_embed import download
+
+        class Response:
+            headers = {}
+
+            def read(self, size):
+                return b"<html>embed</html>"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        with patch("instagram_embed.urllib.request.urlopen", return_value=Response()) as fetch, \
+             patch("instagram_embed.video_url_from_html", return_value="https://evil.example/x.mp4"):
+            self.assertIsNone(download("abc", 100000))
+        self.assertEqual(fetch.call_count, 1)
 
 
 if __name__ == "__main__":

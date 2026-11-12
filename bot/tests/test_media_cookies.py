@@ -91,6 +91,20 @@ class CookieConversionTests(unittest.TestCase):
             with patch.dict(os.environ, {"INSTAGRAM_COOKIE_FILE": path}, clear=True):
                 self.assertEqual(instagram_cookie_header(), "sessionid=abc")
 
+    def test_dashboard_instagram_session_is_used_without_env(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = os.path.join(folder, "cookies.json")
+            with open(store, "w", encoding="utf-8") as output:
+                json.dump({
+                    "youtube": ["SID=youtube"],
+                    "instagram": ["sessionid=dashboard; csrftoken=csrf"],
+                }, output)
+            with patch.dict(os.environ, {"COOKIE_PATH": store}, clear=True):
+                self.assertEqual(
+                    instagram_cookie_header(),
+                    "sessionid=dashboard; csrftoken=csrf",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

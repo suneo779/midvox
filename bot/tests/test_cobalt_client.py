@@ -1,4 +1,6 @@
 import json
+import os
+import tempfile
 import time
 import unittest
 from unittest.mock import MagicMock, patch
@@ -43,6 +45,29 @@ class CobaltClientTests(unittest.TestCase):
             self.assertEqual(client.download("https://youtu.be/example", 100), "/tmp/media.mp4")
 
         self.assertEqual(qualities, ["max", "1080"])
+
+    def test_oversized_source_is_returned_for_local_compression(self):
+        client = self.client()
+        handle, path = tempfile.mkstemp(suffix=".mp4")
+        os.close(handle)
+        with open(path, "wb") as output:
+            output.write(b"\x00\x00\x00\x18ftypisom" + b"\x00" * 500)
+        calls = 0
+
+        def media(url, limit, deadline, *, source="youtube"):
+            nonlocal calls
+            calls += 1
+            return path if calls == 1 else None
+
+        try:
+            with patch.object(client, "_request", return_value={
+                "status": "tunnel", "url": "https://cobalt.example/tunnel",
+            }), patch.object(client, "_media", side_effect=media):
+                self.assertEqual(client.download("https://youtu.be/example", 100), path)
+            self.assertGreater(os.path.getsize(path), 100)
+        finally:
+            if os.path.exists(path):
+                os.remove(path)
 
     def test_all_failures_keep_the_specific_cobalt_error(self):
         client = self.client()

@@ -16,10 +16,22 @@ class Response(io.BytesIO):
 
 
 class HostedDownloadTests(unittest.TestCase):
-    def test_skips_oversized_file_without_get(self):
-        with patch("hosted_downloads.urllib.request.urlopen", return_value=Response(headers={"Content-Length": "101"})) as fetch:
+    def test_skips_file_beyond_the_compression_cap_without_get(self):
+        with patch.dict(os.environ, {"MEDIA_SOURCE_MAX_BYTES": "100"}), \
+             patch("hosted_downloads.urllib.request.urlopen", return_value=Response(headers={"Content-Length": "101"})) as fetch:
             self.assertIsNone(HostedDownloads._media("https://provider.example/video", 100, time.monotonic() + 10))
             self.assertEqual(fetch.call_count, 1)
+
+    def test_oversized_but_compressible_file_is_kept(self):
+        content = b"\x00\x00\x00\x18ftypisom" + b"\x00" * 300
+        with patch("hosted_downloads.urllib.request.urlopen", side_effect=[Response(), Response(content)]):
+            path = HostedDownloads._media("https://provider.example/video", 100, time.monotonic() + 10)
+        try:
+            self.assertTrue(path)
+            self.assertGreater(os.path.getsize(path), 100)
+        finally:
+            if path:
+                os.unlink(path)
 
     def test_empty_file_is_rejected_and_removed(self):
         with patch("hosted_downloads.urllib.request.urlopen", side_effect=[Response(), Response()]), patch("hosted_downloads.os.unlink") as cleanup:

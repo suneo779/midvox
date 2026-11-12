@@ -12,6 +12,20 @@ def upload_budget(configured, guild_limit=None):
     return min(configured, int(guild_limit * 0.98)) if guild_limit else configured
 
 
+def source_cap(limit):
+    """Largest source worth downloading for a later re-encode.
+
+    Renditions above the Discord budget are kept and compressed, so the cap is
+    intentionally larger than the upload limit. It only prevents a runaway
+    download from exhausting the container.
+    """
+    try:
+        configured = int(os.getenv("MEDIA_SOURCE_MAX_BYTES", "104857600"))
+    except (TypeError, ValueError):
+        configured = 104857600
+    return max(limit, configured)
+
+
 def is_valid_video(path):
     """Reject HTML/JSON error bodies saved with a .mp4 name."""
     try:
@@ -80,7 +94,7 @@ def download_fitting_video(ydl, url, limit, *, compress=False):
         # Instagram can expose one oversized rendition with no lower qualities.
         # Download only the smallest complete source, then encode it to budget.
         sources = fitting_formats(info, float("inf"))
-        source_limit = min(80_000_000, max(32_000_000, limit * 8))
+        source_limit = source_cap(limit)
         sources = [f for f in sources if not (f.get("filesize") or f.get("filesize_approx"))
                    or (f.get("filesize") or f.get("filesize_approx")) <= source_limit]
         if sources:
@@ -122,42 +136,74 @@ def download_fitting_video(ydl, url, limit, *, compress=False):
 
 
 def compress_to_budget(path, limit):
-    """Encode one oversized Reel to a bounded H.264/AAC upload, off the event loop."""
+    """Encode one oversized Reel to a bounded H.264/AAC upload, off the event loop.
+
+    Two-pass ABR targets the exact Discord budget. If the first attempt still
+    lands above it, lower resolutions are retried before giving up, which keeps
+    a single high-bitrate Instagram rendition from failing the whole download.
+    """
     if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
         return None
-    output = None
     try:
         probe = subprocess.run([
             "ffprobe", "-v", "error", "-show_entries", "format=duration",
             "-of", "json", path,
         ], capture_output=True, check=True, timeout=15)
         duration = float(json.loads(probe.stdout)["format"]["duration"])
-        if not math.isfinite(duration) or duration <= 0:
-            return None
-        # Reserve space for the MP4 container and bitrate variation.
-        total_bitrate = int(limit * 0.90 * 8 / duration)
-        audio_bitrate = min(96_000, int(total_bitrate * 0.20))
-        video_bitrate = total_bitrate - audio_bitrate
-        if audio_bitrate < 24_000 or video_bitrate < 64_000:
-            return None
-        handle, output = tempfile.mkstemp(prefix="instadl_discord_", suffix=".mp4")
-        os.close(handle)
-        with tempfile.TemporaryDirectory(prefix="instadl_encode_") as work:
-            common = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-                      "-i", path, "-map", "0:v:0", "-vf", r"scale=trunc(min(720\,iw)/2)*2:-2,fps=30",
-                      "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
-                      "-b:v", str(video_bitrate), "-threads", "2", "-passlogfile", os.path.join(work, "pass")]
-            subprocess.run(common + ["-pass", "1", "-an", "-f", "null", os.devnull],
-                           capture_output=True, check=True, timeout=180)
-            subprocess.run(common + ["-pass", "2", "-map", "0:a:0?", "-c:a", "aac",
-                           "-b:a", str(audio_bitrate), "-movflags", "+faststart", output],
-                           capture_output=True, check=True, timeout=180)
-        if 0 < os.path.getsize(output) <= limit:
-            result, output = output, None
-            return result
     except (OSError, ValueError, KeyError, subprocess.SubprocessError):
-        print("[InstaDL] Reel compression could not produce a file within the upload budget")
-    finally:
-        if output and os.path.exists(output):
-            os.remove(output)
+        print("[InstaDL] could not read media duration for compression")
+        return None
+    if not math.isfinite(duration) or duration <= 0:
+        return None
+
+    total_bitrate = int(limit * 0.94 * 8 / duration)
+    if total_bitrate < 100_000:
+        # Even a 360p/32k encode cannot fit this budget (very long video).
+        return None
+
+    audio_bitrate = min(96_000, max(32_000, int(total_bitrate * 0.20)))
+    audio_bitrate = min(audio_bitrate, total_bitrate - 8_000 - 64_000)
+    video_bitrate = total_bitrate - audio_bitrate - 8_000
+    if audio_bitrate < 24_000 or video_bitrate < 64_000:
+        return None
+
+    for height in (720, 540, 480, 360):
+        output = None
+        try:
+            handle, output = tempfile.mkstemp(prefix="instadl_discord_", suffix=".mp4")
+            os.close(handle)
+            with tempfile.TemporaryDirectory(prefix="instadl_encode_") as work:
+                common = [
+                    "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+                    "-i", path, "-map", "0:v:0",
+                    "-vf", f"scale=trunc(min({height}\\,iw)/2)*2:-2,fps=30",
+                    "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+                    "-b:v", str(video_bitrate), "-maxrate", str(video_bitrate),
+                    "-bufsize", str(video_bitrate * 2), "-threads", "2",
+                    "-passlogfile", os.path.join(work, "pass"),
+                ]
+                subprocess.run(
+                    common + ["-pass", "1", "-an", "-f", "null", os.devnull],
+                    capture_output=True, check=True, timeout=180,
+                )
+                subprocess.run(
+                    common + [
+                        "-pass", "2", "-map", "0:a:0?", "-c:a", "aac",
+                        "-b:a", str(audio_bitrate), "-movflags", "+faststart", output,
+                    ],
+                    capture_output=True, check=True, timeout=180,
+                )
+            if 0 < os.path.getsize(output) <= limit:
+                result, output = output, None
+                return result
+            print(f"[InstaDL] {height}p encode still exceeded the upload budget")
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            print(f"[InstaDL] {height}p compression attempt failed: {type(error).__name__}")
+        finally:
+            if output and os.path.exists(output):
+                try:
+                    os.remove(output)
+                except OSError:
+                    pass
+    print("[InstaDL] compression could not produce a file within the upload budget")
     return None

@@ -87,15 +87,29 @@ class MediaQualityTests(unittest.TestCase):
             partial = os.path.join(folder, "partial.mp4")
             fd = os.open(partial, os.O_CREAT | os.O_RDWR)
             probe = subprocess.CompletedProcess([], 0, stdout=b'{"format":{"duration":"30"}}')
+            def run(command, **kwargs):
+                if "-show_entries" in command:
+                    return probe
+                raise subprocess.TimeoutExpired("ffmpeg", 90)
             with patch("media_quality.shutil.which", return_value="binary"), \
                  patch("media_quality.tempfile.mkstemp", return_value=(fd, partial)), \
-                 patch("media_quality.subprocess.run", side_effect=[probe, subprocess.TimeoutExpired("ffmpeg", 90)]):
+                 patch("media_quality.subprocess.run", side_effect=run):
                 self.assertIsNone(compress_to_budget("source", 1_000_000))
             self.assertFalse(os.path.exists(partial))
 
     def test_server_limit_and_configured_cap(self):
         self.assertEqual(upload_budget(9500000, 8000000), 7840000)
         self.assertEqual(upload_budget(9500000, 50000000), 9500000)
+
+    def test_source_cap_allows_blindly_oversized_renditions(self):
+        from media_quality import source_cap
+        with patch.dict(os.environ, {"MEDIA_SOURCE_MAX_BYTES": "200000000"}):
+            self.assertEqual(source_cap(9500000), 200000000)
+        with patch.dict(os.environ, {"MEDIA_SOURCE_MAX_BYTES": "invalid"}):
+            self.assertEqual(source_cap(9500000), 104857600)
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(source_cap(9500000), 104857600)
+            self.assertEqual(source_cap(500000000), 500000000)
 
     def test_rejects_html_saved_as_video(self):
         with tempfile.TemporaryDirectory() as folder:

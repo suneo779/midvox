@@ -39,12 +39,46 @@ def youtube_browser_cookies(contents):
     return cookies
 
 
+def _instagram_domain(cookie):
+    domain = str(cookie.get("domain", "")).lstrip(".").lower()
+    return domain == "instagram.com" or domain.endswith(".instagram.com")
+
+
+def instagram_cookie_header(cookies):
+    selected = {c["name"]: c["value"] for c in cookies if _instagram_domain(c)}
+    if "sessionid" not in selected:
+        raise ValueError("Finish signing in to Instagram before saving the session.")
+    return "; ".join(f"{name}={value}" for name, value in selected.items())
+
+
+def instagram_browser_cookies(contents):
+    headers = contents.get("instagram", [])
+    if not isinstance(headers, list) or not headers or not isinstance(headers[0], str):
+        return []
+    cookies = []
+    for part in headers[0].split(";"):
+        name, separator, value = part.strip().partition("=")
+        if separator and name:
+            cookies.append({"name": name, "value": value, "domain": ".instagram.com",
+                            "path": "/", "secure": True})
+    return cookies
+
+
 class LoginBrowser:
     def __init__(self, kind="youtube"):
         self.kind = kind
-        self.display_name = ":89" if kind == "youtube" else ":88"
-        self.debug_port = 9223 if kind == "youtube" else 9224
-        self.url = "https://www.youtube.com/account" if kind == "youtube" else "https://discord.com/login"
+        if kind == "instagram":
+            self.display_name = ":87"
+            self.debug_port = 9225
+            self.url = "https://www.instagram.com/accounts/login/"
+        elif kind == "discord":
+            self.display_name = ":88"
+            self.debug_port = 9224
+            self.url = "https://discord.com/login"
+        else:
+            self.display_name = ":89"
+            self.debug_port = 9223
+            self.url = "https://www.youtube.com/account"
         self.process = self.display = self.profile = self.session = None
         self.socket = None
         self.sequence = 0
@@ -71,7 +105,7 @@ class LoginBrowser:
                     if data.get("id") == ident:
                         if "error" in data:
                             # Log only protocol metadata, never page content or credentials.
-                            print(f"[youtube-login] {method} failed (code {data['error'].get('code')})", flush=True)
+                            print(f"[{self.kind}-login] {method} failed (code {data['error'].get('code')})", flush=True)
                             raise BrowserUnavailable("Browser stopped responding. Reopen it; your saved session is safe.")
                         return data.get("result", {})
         except TimeoutError as exc:
@@ -109,6 +143,17 @@ class LoginBrowser:
                     message = "No selected browser login. The worker uses USER_TOKEN until you save a new login here."
             except (OSError, ValueError, KeyError, TypeError):
                 message = "No selected browser login. Sign in and save to choose the bump account."
+        elif self.kind == "instagram":
+            try:
+                contents = json.loads(COOKIE_FILE.read_text(encoding="utf-8"))
+                saved = bool(instagram_browser_cookies(contents))
+            except (OSError, ValueError, TypeError, AttributeError):
+                saved = False
+            message = (
+                "An Instagram session is saved. Sign in again here to replace it."
+                if saved else
+                "No Instagram session saved. Sign in and save to enable Reel downloads."
+            )
         return {"message": message, "running": bool(self.socket and not self.socket.closed)}
 
     async def stop(self):
@@ -128,6 +173,37 @@ class LoginBrowser:
         self.account_token = None
         self.discord_requests.clear()
         self.discord_headers.clear()
+
+    @staticmethod
+    def read_cookie_store():
+        """Read the shared Cobalt cookie store without losing other services."""
+        try:
+            store = json.loads(COOKIE_FILE.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            store = {}
+        return store if isinstance(store, dict) else {}
+
+    @classmethod
+    def save_cookie_header(cls, kind, header):
+        """Atomically replace one service's session in the shared store."""
+        store = cls.read_cookie_store()
+        store[kind] = [header]
+        pending = COOKIE_FILE.with_suffix(".pending")
+        pending.write_text(json.dumps(store), encoding="utf-8")
+        pending.chmod(0o600)
+        pending.replace(COOKIE_FILE)
+
+    @staticmethod
+    def restart_cobalt():
+        pid_path = Path("/tmp/midvox-cobalt.pid")
+        try:
+            pid = int(pid_path.read_text())
+            command = Path(f"/proc/{pid}/cmdline").read_bytes()
+        except (OSError, ValueError):
+            raise ValueError("Session saved, but Cobalt is not running to load it.")
+        if b"src/cobalt.js" not in command:
+            raise ValueError("Session saved, but Cobalt must be restarted to load it.")
+        os.kill(pid, signal.SIGTERM)  # start.sh restarts only Cobalt.
 
     async def screenshot(self):
         # Chromium can briefly refuse capture during the first navigation.
@@ -160,7 +236,7 @@ class LoginBrowser:
                 "--disable-component-update", "--disable-default-apps",
                 "--remote-debugging-address=127.0.0.1", f"--remote-debugging-port={self.debug_port}",
                 f"--user-data-dir={self.profile.name}", "--window-size=1100,800",
-                "about:blank" if self.kind == "youtube" else self.url]
+                "about:blank" if self.kind in ("youtube", "instagram") else self.url]
         if self.kind == "youtube" and os.getenv("COBALT_PROXY_URL"):
             args.insert(-1, f"--proxy-server={os.environ['COBALT_PROXY_URL']}")
         self.process = await asyncio.create_subprocess_exec(
@@ -184,10 +260,15 @@ class LoginBrowser:
                     await self.command("Network.setBlockedURLs", {"urls": [
                         "*://*.googlevideo.com/*", "*://i.ytimg.com/*",
                     ]})
+                if self.kind in ("youtube", "instagram"):
                     try:
-                        cookies = youtube_browser_cookies(json.loads(COOKIE_FILE.read_text(encoding="utf-8")))
+                        contents = json.loads(COOKIE_FILE.read_text(encoding="utf-8"))
                     except (OSError, ValueError, TypeError, AttributeError):
-                        cookies = []
+                        contents = {}
+                    if self.kind == "youtube":
+                        cookies = youtube_browser_cookies(contents)
+                    else:
+                        cookies = instagram_browser_cookies(contents)
                     if cookies:
                         await self.command("Network.setCookies", {"cookies": cookies})
                     await self.command("Page.navigate", {"url": self.url})
@@ -237,7 +318,7 @@ class LoginBrowser:
                     for kind in ("keyDown", "keyUp"):
                         await self.command("Input.dispatchKeyEvent", {"type": kind, "key": key,
                                            "windowsVirtualKeyCode": code, "modifiers": modifiers})
-                elif action in ("youtube", "discord"):
+                elif action in ("youtube", "discord", "instagram"):
                     if action != self.kind:
                         raise ValueError("Wrong login service")
                     await self.command("Page.navigate", {"url": self.url})
@@ -288,33 +369,24 @@ class LoginBrowser:
                     await self.stop()
                     return web.json_response({"message": f"Saved Discord account {account['username']} ({account['id']}) and encrypted it in MongoDB. Bump will use this login instead of USER_TOKEN within 60 seconds."})
                 elif action == "save":
-                    # Navigate back to YouTube before saving to bind the session there.
                     cookies = (await self.command("Network.getAllCookies"))["cookies"]
-                    header = youtube_cookie_header(cookies)
-                    # Cobalt also reads Instagram cookies from this file; keep
-                    # them when the owner refreshes the YouTube session.
-                    try:
-                        store = json.loads(COOKIE_FILE.read_text(encoding="utf-8"))
-                    except (OSError, ValueError):
-                        store = {}
-                    if not isinstance(store, dict):
-                        store = {}
-                    store["youtube"] = [header]
-                    COOKIE_FILE.write_text(json.dumps(store), encoding="utf-8")
-                    COOKIE_FILE.chmod(0o600)
+                    if self.kind == "instagram":
+                        header = instagram_cookie_header(cookies)
+                        label = "Instagram"
+                    else:
+                        header = youtube_cookie_header(cookies)
+                        label = "YouTube"
+                    self.save_cookie_header(self.kind, header)
                     try:
                         from youtube_session_store import transfer
-                        backed_up = await asyncio.to_thread(transfer)
+                        backed_up = await asyncio.to_thread(transfer, kind=self.kind)
                     except Exception:
                         backed_up = False
                     if not backed_up:
                         raise ValueError("Session saved in this container, but the encrypted MongoDB backup failed. Keep this browser open and retry Save session after checking the database connection.")
-                    pid = int(Path("/tmp/midvox-cobalt.pid").read_text())
-                    if b"src/cobalt.js" not in Path(f"/proc/{pid}/cmdline").read_bytes():
-                        raise ValueError("Session saved, but Cobalt must be restarted to load it.")
-                    os.kill(pid, signal.SIGTERM)  # start.sh restarts only Cobalt with the saved session.
+                    self.restart_cobalt()
                     await self.stop()
-                    return web.json_response({"message": "Session saved and encrypted in MongoDB. It restores after redeploys or hosting changes when you keep the same database, NEXTAUTH_SECRET, and primary OWNER_IDS entry. Cobalt is restarting."})
+                    return web.json_response({"message": f"{label} session saved and encrypted in MongoDB. It restores after redeploys or hosting changes when you keep the same database, NEXTAUTH_SECRET, and primary OWNER_IDS entry. Cobalt is restarting."})
                 else:
                     raise ValueError("Unsupported action")
                 return web.json_response(self.login_status())
@@ -335,36 +407,47 @@ class LoginBrowser:
 
 
 async def main():
-    browser = LoginBrowser()
-    discord = LoginBrowser("discord")
+    browsers = {
+        "/browser": LoginBrowser("youtube"),
+        "/discord-browser": LoginBrowser("discord"),
+        "/instagram-browser": LoginBrowser("instagram"),
+    }
     login_lock = asyncio.Lock()
 
     async def handle_login(request):
-        selected, other = (discord, browser) if request.path == "/discord-browser" else (browser, discord)
+        selected = browsers.get(request.path)
+        if selected is None:
+            raise web.HTTPNotFound()
         async with login_lock:
-            if request.method == "POST" and (await request.json()).get("action") == "start":
-                async with other.lock:
-                    await other.stop()
+            if request.method == "POST":
+                try:
+                    action = (await request.json()).get("action")
+                except (ValueError, AttributeError):
+                    action = None
+                if action == "start":
+                    for other in browsers.values():
+                        if other is not selected:
+                            async with other.lock:
+                                await other.stop()
             return await selected.handle(request)
 
     app = web.Application(client_max_size=8192)
-    app.router.add_route("*", "/browser", handle_login)
-    app.router.add_route("*", "/discord-browser", handle_login)
+    for path in browsers:
+        app.router.add_route("*", path, handle_login)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     await web.TCPSite(runner, "127.0.0.1", 8082).start()
-    reaper = asyncio.create_task(browser.reap())
-    discord_reaper = asyncio.create_task(discord.reap())
+    reapers = [asyncio.create_task(browser.reap()) for browser in browsers.values()]
     stopped = asyncio.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
         asyncio.get_running_loop().add_signal_handler(sig, stopped.set)
     try:
         await stopped.wait()
     finally:
-        reaper.cancel()
-        discord_reaper.cancel()
-        await discord.stop()
-        await browser.stop()
+        for reaper in reapers:
+            reaper.cancel()
+        for browser in browsers.values():
+            await browser.stop()
         await runner.cleanup()
 
 

@@ -145,11 +145,11 @@ def _write_cookie_file(prefix, content):
     return path
 
 
-def youtube_session_header():
-    """Read the YouTube login store written by the dashboard.
+def _session_header(kind):
+    """Read one service's login header written by the dashboard.
 
-    The on-disk format is ``{"youtube": ["SID=...; PREF=..."]}``. The header is
-    also useful as a hint for choosing Cobalt's first YouTube client.
+    The on-disk format is ``{"youtube": ["SID=..."], "instagram": ["sessionid=..."]}``.
+    Both services share the file so Cobalt can load them together.
     """
     path = os.getenv("COOKIE_PATH", "/tmp/midvox-youtube-cookies.json")
     try:
@@ -159,12 +159,26 @@ def youtube_session_header():
         return ""
     if not isinstance(contents, dict):
         return ""
-    entries = contents.get("youtube")
+    entries = contents.get(kind)
     if isinstance(entries, str):
         return entries.strip()
     if isinstance(entries, list):
         return "; ".join(str(item).strip() for item in entries if isinstance(item, str) and item.strip())
     return ""
+
+
+def youtube_session_header():
+    """Read the YouTube login store written by the dashboard.
+
+    The header is also useful as a hint for choosing Cobalt's first YouTube
+    client.
+    """
+    return _session_header("youtube")
+
+
+def instagram_session_header():
+    """Read the Instagram session saved by the dashboard login browser."""
+    return _session_header("instagram")
 
 
 def youtube_cookie_file():
@@ -182,26 +196,33 @@ def instagram_cookie_header():
         "INSTAGRAM_COOKIES", "IG_COOKIES",
         "INSTAGRAM_COOKIE_FILE", "IG_COOKIE_FILE",
     )
-    if not raw:
-        return ""
-    content = cookie_file_from_value(raw, ".instagram.com")
-    if not content:
-        return ""
-    pairs = []
-    for line in content.splitlines():
-        if line.startswith("#") or not line.strip():
-            continue
-        fields = line.split("\t")
-        if len(fields) == 7:
-            domain = fields[0].lstrip("#").lstrip(".").lower()
-            if domain == "instagram.com" or domain.endswith(".instagram.com"):
-                pairs.append(f"{fields[5]}={fields[6]}")
-    return "; ".join(pairs)
+    if raw:
+        content = cookie_file_from_value(raw, ".instagram.com")
+        if content:
+            pairs = []
+            for line in content.splitlines():
+                if line.startswith("#") or not line.strip():
+                    continue
+                fields = line.split("\t")
+                if len(fields) == 7:
+                    domain = fields[0].lstrip("#").lstrip(".").lower()
+                    if domain == "instagram.com" or domain.endswith(".instagram.com"):
+                        pairs.append(f"{fields[5]}={fields[6]}")
+            if pairs:
+                return "; ".join(pairs)
+    # The dashboard login browser saves its session into the same store as
+    # YouTube. Use it when no Railway variable is configured.
+    return instagram_session_header()
 
 
 def instagram_cookie_file():
     raw = _first_env("INSTAGRAM_COOKIES", "IG_COOKIES", "INSTAGRAM_COOKIE_FILE", "IG_COOKIE_FILE")
-    content = cookie_file_from_value(raw, ".instagram.com")
+    content = cookie_file_from_value(raw, ".instagram.com") if raw else None
+    if not content:
+        header = instagram_session_header()
+        content = cookie_file_from_value(
+            header, ".instagram.com", allow_path=False
+        ) if header else None
     return _write_cookie_file("midvox-instagram", content)
 
 

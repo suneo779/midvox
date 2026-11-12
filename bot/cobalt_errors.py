@@ -14,9 +14,9 @@ def extraction_error(codes, source="youtube"):
             return CobaltDownloadError(
                 "error.api.fetch.fail",
                 "Instagram blocked Cobalt's server connection for this Reel. "
-                "Add an Instagram session with INSTAGRAM_COOKIES or try again "
-                "later; the bot will also retry through yt-dlp and Instagram's "
-                "public embed page.",
+                "Sign in from Admin Panel → Instagram login (or add "
+                "INSTAGRAM_COOKIES) and try again; the bot will also retry "
+                "through yt-dlp and Instagram's public embed page.",
             )
         if "error.api.fetch.rate" in codes:
             return CobaltDownloadError(

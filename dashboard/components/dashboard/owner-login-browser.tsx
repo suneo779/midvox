@@ -4,8 +4,9 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
-export default function OwnerLoginBrowser({ service }: { service: "youtube" | "discord" }) {
-  const label = service === "youtube" ? "YouTube" : "Discord";
+export default function OwnerLoginBrowser({ service }: { service: "youtube" | "discord" | "instagram" }) {
+  const labels = { youtube: "YouTube", discord: "Discord", instagram: "Instagram" } as const;
+  const label = labels[service];
   const endpoint = `/api/${service}-login`;
   const [running, setRunning] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -150,6 +151,6 @@ export default function OwnerLoginBrowser({ service }: { service: "youtube" | "d
         action("click", { x: (event.clientX - box.left) * 1100 / box.width, y: (event.clientY - box.top) * 800 / box.height });
       }} /></div>}
     </>}
-    <p className="text-xs text-[var(--panel-muted)]">{service === "discord" ? "Saving selects this Discord account for bumping instead of USER_TOKEN. " : ""}Only one login browser runs at a time; opening this one closes the other. Saved sessions stay private and are backed up encrypted in MongoDB. Keep the same database, NEXTAUTH_SECRET, and primary OWNER_IDS entry when moving hosts. The provider may expire or revoke a session, requiring another login.</p>
+    <p className="text-xs text-[var(--panel-muted)]">{service === "discord" ? "Saving selects this Discord account for bumping instead of USER_TOKEN. " : service === "instagram" ? "Saving enables authenticated Reel downloads and is loaded by Cobalt, yt-dlp and Instagram's API. " : ""}Only one login browser runs at a time; opening this one closes the other. Saved sessions stay private and are backed up encrypted in MongoDB. Keep the same database, NEXTAUTH_SECRET, and primary OWNER_IDS entry when moving hosts. The provider may expire or revoke a session, requiring another login.</p>
   </section>;
 }

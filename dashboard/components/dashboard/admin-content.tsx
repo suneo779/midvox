@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import {
-  Shield, Users, Server, Activity, Database, Cpu, Globe, Lock, Settings, RefreshCw, Youtube, ArrowUpRight
+  Shield, Users, Server, Activity, Database, Cpu, Globe, Lock, Settings, RefreshCw, Youtube, Instagram, ArrowUpRight
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
@@ -124,6 +124,21 @@ export function AdminContent({ canManageOwnerLogins = false }: { canManageOwnerL
           </div>
           <Link href="/dashboard/youtube-login" className="inline-flex shrink-0 items-center justify-center gap-2 rounded-md bg-[#B9CF7A] px-5 py-3 text-sm font-semibold text-[#151810] transition-colors hover:bg-[#C6DB8B] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#B9CF7A]">
             Open YouTube login <ArrowUpRight className="h-4 w-4" aria-hidden="true" />
+          </Link>
+        </section>
+      )}
+
+      {canManageOwnerLogins && (
+        <section className="flex flex-col gap-5 rounded-[6px] border border-[#B9CF7A]/25 bg-[#131710] p-6 sm:flex-row sm:items-center sm:justify-between" aria-labelledby="instagram-login-heading">
+          <div className="flex items-start gap-4">
+            <Instagram className="mt-1 h-6 w-6 shrink-0 text-[#B9CF7A]" aria-hidden="true" />
+            <div>
+              <h2 id="instagram-login-heading" className="text-lg font-bold text-slate-50">Instagram login</h2>
+              <p className="mt-1 text-sm text-neutral-400">Manage the bot&apos;s Instagram session for Reel downloads. Saved sessions are encrypted. Bot owners only.</p>
+            </div>
+          </div>
+          <Link href="/dashboard/instagram-login" className="inline-flex shrink-0 items-center justify-center gap-2 rounded-md bg-[#B9CF7A] px-5 py-3 text-sm font-semibold text-[#151810] transition-colors hover:bg-[#C6DB8B] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#B9CF7A]">
+            Open Instagram login <ArrowUpRight className="h-4 w-4" aria-hidden="true" />
           </Link>
         </section>
       )}

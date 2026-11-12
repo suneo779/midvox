@@ -7,8 +7,11 @@ source = Path(__file__).resolve().parents[2] / "docker/youtube_login_server.py"
 tree = ast.parse(source.read_text(encoding="utf-8"))
 function = next(node for node in tree.body if getattr(node, "name", "") == "youtube_cookie_header")
 restore_function = next(node for node in tree.body if getattr(node, "name", "") == "youtube_browser_cookies")
+instagram_function = next(node for node in tree.body if getattr(node, "name", "") == "instagram_cookie_header")
+instagram_restore = next(node for node in tree.body if getattr(node, "name", "") == "instagram_browser_cookies")
+instagram_domain = next(node for node in tree.body if getattr(node, "name", "") == "_instagram_domain")
 namespace = {}
-exec(compile(ast.Module(body=[function, restore_function], type_ignores=[]), str(source), "exec"), namespace)
+exec(compile(ast.Module(body=[function, restore_function, instagram_function, instagram_restore, instagram_domain], type_ignores=[]), str(source), "exec"), namespace)
 cookie_header = namespace["youtube_cookie_header"]
 
 browser_namespace = {"asyncio": asyncio, "time": __import__("time"), "json": __import__("json")}
@@ -66,6 +69,10 @@ class BrowserHealthTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_login_opens_account_instead_of_video_feed(self):
         self.assertEqual(browser_namespace["LoginBrowser"]().url, "https://www.youtube.com/account")
+        self.assertEqual(
+            browser_namespace["LoginBrowser"]("instagram").url,
+            "https://www.instagram.com/accounts/login/",
+        )
 
 
 class YouTubeLoginTests(unittest.TestCase):
@@ -88,3 +95,34 @@ class YouTubeLoginTests(unittest.TestCase):
     def test_missing_or_malformed_session_restores_no_cookies(self):
         for contents in ({}, {"youtube": []}, {"youtube": "invalid"}, {"youtube": [None]}):
             self.assertEqual(namespace["youtube_browser_cookies"](contents), [])
+
+
+class InstagramLoginTests(unittest.TestCase):
+    def test_only_instagram_cookies_are_saved(self):
+        cookies = [
+            {"name": "sessionid", "value": "session", "domain": ".instagram.com"},
+            {"name": "csrftoken", "value": "csrf", "domain": "www.instagram.com"},
+            {"name": "SID", "value": "youtube-secret", "domain": ".youtube.com"},
+            {"name": "OTHER", "value": "secret", "domain": "evilinstagram.com"},
+        ]
+        self.assertEqual(
+            namespace["instagram_cookie_header"](cookies),
+            "sessionid=session; csrftoken=csrf",
+        )
+
+    def test_anonymous_instagram_session_cannot_be_saved(self):
+        with self.assertRaisesRegex(ValueError, "Finish signing in"):
+            namespace["instagram_cookie_header"](
+                [{"name": "csrftoken", "value": "x", "domain": ".instagram.com"}]
+            )
+
+    def test_instagram_browser_restore_restricts_domain(self):
+        cookies = namespace["instagram_browser_cookies"](
+            {"instagram": ["sessionid=session==; csrftoken=value"]}
+        )
+        self.assertEqual(cookies[0]["value"], "session==")
+        self.assertTrue(all(c["domain"] == ".instagram.com" and c["secure"] for c in cookies))
+
+    def test_missing_instagram_session_restores_no_cookies(self):
+        for contents in ({}, {"instagram": []}, {"instagram": "invalid"}, {"instagram": [None]}):
+            self.assertEqual(namespace["instagram_browser_cookies"](contents), [])

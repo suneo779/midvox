@@ -13,6 +13,8 @@ import tempfile
 import urllib.parse
 import urllib.request
 
+from media_quality import source_cap
+
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
@@ -46,8 +48,13 @@ def video_url_from_html(page):
 def download(shortcode, limit, *, cookie_header="", timeout=25):
     """Download a public Reel through its embed page.
 
-    Returns a temp file path within ``limit`` bytes, or ``None``.
+    Returns a temp file path, or ``None``. The file may exceed ``limit`` so the
+    caller can compress the only rendition Instagram exposes.
     """
+    try:
+        cap = source_cap(limit)
+    except (TypeError, ValueError):
+        cap = max(limit, 104857600)
     headers = {
         "User-Agent": USER_AGENT,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -79,18 +86,33 @@ def download(shortcode, limit, *, cookie_header="", timeout=25):
         return None
 
     parsed = urllib.parse.urlsplit(video_url)
-    if parsed.scheme not in ("http", "https"):
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return None
+    host = parsed.hostname.lower()
+    if not (
+        host == "instagram.com"
+        or host.endswith(".instagram.com")
+        or host.endswith(".cdninstagram.com")
+        or host.endswith(".fbcdn.net")
+    ):
+        print("[InstaDL] refused a media URL outside Instagram's domains")
         return None
 
-    media_headers = dict(headers)
-    media_headers["Accept"] = "*/*"
+    media_headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.instagram.com/",
+    }
+    if cookie_header:
+        media_headers["Cookie"] = cookie_header
     path = None
     keep = False
     try:
         request = urllib.request.Request(video_url, headers=media_headers)
         with urllib.request.urlopen(request, timeout=max(15, timeout)) as response:
             length = response.headers.get("Content-Length", "")
-            if length.isdigit() and int(length) > limit:
+            if length.isdigit() and int(length) > cap:
                 return None
             handle, path = tempfile.mkstemp(prefix="midvox_instagram_", suffix=".mp4")
             with os.fdopen(handle, "wb") as output:
@@ -100,7 +122,7 @@ def download(shortcode, limit, *, cookie_header="", timeout=25):
                     if not chunk:
                         break
                     size += len(chunk)
-                    if size > limit:
+                    if size > cap:
                         return None
                     output.write(chunk)
         if os.path.getsize(path) < 1024:

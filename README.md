@@ -113,9 +113,15 @@ in Railway Variables):
 
 Up to three providers are tried after local Cobalt. Authentication uses
 Cobalt's `Api-Key` scheme; omit `api_key` only for APIs that permit unauthenticated
-requests. Oversized formats are skipped or stopped, empty/invalid files are
-rejected, temporary files are cleaned up, and failed providers pause for five
-minutes. No public instance is assumed reliable or added automatically.
+requests. Empty or invalid files are rejected, temporary files are cleaned up,
+and failed providers pause for five minutes. No public instance is assumed
+reliable or added automatically.
+
+When every rendition is larger than the Discord upload budget, the downloader
+keeps the smallest source and re-encodes it to H.264/AAC instead of rejecting
+it. Only sources beyond the 100 MB compression cap (`MEDIA_SOURCE_MAX_BYTES`)
+or a failed encode are refused, so a normal Instagram Reel or YouTube Short
+does not fail with an upload-limit error.
 
 If Cobalt is blocked, the downloader falls back to `yt-dlp`. Public posts work
 without credentials, but a browser session raises the success rate from
@@ -125,16 +131,17 @@ JSON export, a base64 Netscape export, or a path to a `cookies.txt` file:
 | Variable | Purpose |
 | :--- | :--- |
 | `YT_COOKIES` / `YOUTUBE_COOKIES` | YouTube session for the yt-dlp fallback |
-| `INSTAGRAM_COOKIES` / `IG_COOKIES` | Instagram session for yt-dlp and the embed fallback |
+| `INSTAGRAM_COOKIES` / `IG_COOKIES` | Instagram session for Instagram's API, Cobalt, yt-dlp and the embed fallback |
 | `INSTAGRAM_COOKIE_FILE` / `IG_COOKIE_FILE` | Path to a Netscape Instagram cookie file |
 | `INSTAGRAM_USERNAME` / `INSTAGRAM_PASSWORD` | Optional Instagram login for yt-dlp |
 
-Instagram Reels additionally fall back to Instagram's public embed page, which
-often works without a session even when its private API rate-limits the bot.
-`INSTAGRAM_COOKIES` is also loaded into the local Cobalt sidecar at startup, so
-the same session covers Cobalt, yt-dlp, and the embed route. When Instagram
-blocks anonymous downloads, the bot reports that a session is required instead
-of repeating the raw extractor error.
+Instagram Reels additionally fall back to Instagram's own web/mobile API and
+then its public embed page. The API route uses the saved session to request
+`video_versions` directly, which succeeds in cases where Cobalt and yt-dlp are
+rate-limited. `INSTAGRAM_COOKIES` is also loaded into the local Cobalt sidecar
+at startup, so the same session covers Cobalt, yt-dlp, and the embed route.
+When Instagram blocks anonymous downloads, the bot reports that a session is
+required instead of repeating the raw extractor error.
 
 <details>
 <summary><strong>Optional variables</strong></summary>
@@ -146,6 +153,7 @@ of repeating the raw extractor error.
 | `COBALT_PUBLIC_URL` | local URL | Public base URL generated for Cobalt when required |
 | `COBALT_WARP` | `0` | Routes Cobalt through private WARP egress (`WARP=1` is also accepted) |
 | `COBALT_HOSTED_PROVIDERS` | `[]` | JSON array of independent Cobalt API endpoints |
+| `MEDIA_SOURCE_MAX_BYTES` | `104857600` | Largest source downloaded for later compression (100 MB) |
 | `EMOJI_SYNC` | `false` | Enables startup emoji synchronization |
 | `SUPPORT_URL` | repository URL | Support link shown by bot commands |
 
@@ -224,13 +232,15 @@ snipe 25                              Show the oldest retained message
 
 ## Security
 
-### Owner YouTube login
+### Owner YouTube and Instagram login
 
 The downloader accepts explicit YouTube `/shorts/` and Instagram `/reel/` or `/reels/` links only. Regular videos, posts, images, stories, and ambiguous short URLs are ignored. If a download fails, MongoDB remembers it per guild; subsequent posts of that link remain visible while the bot retries. A successful upload clears the failure record.
 
 When YouTube requires sign-in, open **Admin Panel → Open YouTube login** (or `/dashboard/youtube-login`) while signed in with an account listed in `OWNER_IDS`. Click a field inside the remote browser and type or paste directly. Enter, Tab, Backspace, arrows and Ctrl+A are forwarded; Escape leaves keyboard control. The separate text box remains available as an alternative. Complete any Google verification yourself, return to YouTube, then choose **Save session and close**. This restarts Cobalt with the private session without restarting the bot.
 
-Chromium starts only on demand and closes after saving, closing, or 30 minutes without browser requests. Cookies are backed up encrypted in MongoDB with no application-defined expiry, restored during startup, and loaded into the browser when it opens. Keep the same `MONGO_URI`, `NEXTAUTH_SECRET`, and primary (first) `OWNER_IDS` entry when moving hosts; the bot application ID may change. Old application-specific backups migrate automatically. A failed database backup is reported instead of claiming a portable save. Google can still expire or revoke a session, or challenge a new hosting connection, requiring another login. Cookies are never committed or returned to the dashboard.
+Instagram uses the same on-demand browser. Open **Admin Panel → Open Instagram login** (or `/dashboard/instagram-login`), sign in to the account that should download public Reels, then choose **Save session and close**. The session is written to Cobalt's shared cookie store, restored into the browser the next time it opens, and also used by Instagram's API and yt-dlp. Saving restarts only Cobalt. Use a dedicated account when possible; automated access can be rate-limited or flagged by Instagram.
+
+Chromium starts only on demand and closes after saving, closing, or 30 minutes without browser requests. Cookies are backed up encrypted in MongoDB with no application-defined expiry, restored during startup, and loaded into the browser when it opens. YouTube and Instagram have separate encrypted records, so refreshing one never overwrites the other. Keep the same `MONGO_URI`, `NEXTAUTH_SECRET`, and primary (first) `OWNER_IDS` entry when moving hosts; the bot application ID may change. Old application-specific backups migrate automatically. A failed database backup is reported instead of claiming a portable save. Google or Instagram can still expire or revoke a session, or challenge a new hosting connection, requiring another login. Cookies are never committed or returned to the dashboard.
 
 Keep bot tokens, OAuth secrets, cookie headers, API keys, and MongoDB credentials in Railway Variables or a local untracked `.env` file. Rotate any credential that appears in a commit, screenshot, log, or shared message.
 

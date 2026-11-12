@@ -17,6 +17,7 @@ import tempfile
 from functools import partial
 from cobalt_client import CobaltClient
 from hosted_downloads import HostedDownloads
+from instagram_api import download as download_instagram_api
 from instagram_embed import download as download_instagram_embed
 from media_cookies import (
     instagram_cookie_file,
@@ -619,15 +620,15 @@ class InstaDownloader(commands.Cog):
                 if instagram_cookie_header():
                     text = (
                         "Instagram refused the download even with the saved "
-                        "session. The session may have expired; refresh "
-                        "`INSTAGRAM_COOKIES` in Railway Variables or try again "
-                        "later."
+                        "session. The session may have expired; sign in again "
+                        "from the dashboard's Instagram login, or try again later."
                     )
                 else:
                     text = (
-                        "Instagram is blocking anonymous Reel downloads. Add "
-                        "`INSTAGRAM_COOKIES` in Railway Variables to download "
-                        "with a session, or try this link again later."
+                        "Instagram is blocking anonymous Reel downloads. Sign "
+                        "in from Admin Panel → Instagram login (or add "
+                        "`INSTAGRAM_COOKIES` in Railway Variables), then try "
+                        "this link again."
                     )
             elif any(term in lowered for term in (
                 "login", "sign in", "confirm you", "bot check", "cookies",
@@ -659,9 +660,11 @@ class InstaDownloader(commands.Cog):
     async def _download_and_send_inner(self, message, url, config, source="instagram"):
         """Download through every available route, then repost the media inline.
 
-        Order matters: local Cobalt first, hosted Cobalt next, cookie-aware
-        yt-dlp last. Instagram also gets a public embed fallback because its
-        private API regularly rate-limits datacenter IPs.
+        Instagram first asks Instagram's own API with the owner session, then
+        local Cobalt, hosted Cobalt, cookie-aware yt-dlp, and finally the public
+        embed page. YouTube uses Cobalt and yt-dlp. Any route may return a file
+        larger than the Discord budget; it is compressed before upload instead
+        of being discarded.
         """
         loop = asyncio.get_running_loop()
         self._last_cobalt_error = None
@@ -670,13 +673,33 @@ class InstaDownloader(commands.Cog):
         upload_limit = upload_budget(
             UPLOAD_LIMIT_BYTES, getattr(message.guild, "filesize_limit", None),
         )
+        shortcode = url.rstrip("/").rsplit("/", 1)[-1] if source == "instagram" else ""
+        instagram_cookies = instagram_cookie_header() if source == "instagram" else ""
 
-        try:
-            file_path = await loop.run_in_executor(
-                None, self._cobalt_download, url, upload_limit, source,
-            )
-        except Exception as error:
-            print(f"[InstaDL] local Cobalt route failed: {type(error).__name__}")
+        if source == "instagram" and instagram_cookies:
+            try:
+                file_path = await loop.run_in_executor(
+                    None,
+                    partial(
+                        download_instagram_api,
+                        shortcode,
+                        upload_limit,
+                        cookie_header=instagram_cookies,
+                    ),
+                )
+            except Exception as error:
+                print(f"[InstaDL] Instagram API route failed: {type(error).__name__}")
+            else:
+                if file_path:
+                    print("[InstaDL] Instagram API downloaded successfully")
+
+        if not file_path:
+            try:
+                file_path = await loop.run_in_executor(
+                    None, self._cobalt_download, url, upload_limit, source,
+                )
+            except Exception as error:
+                print(f"[InstaDL] local Cobalt route failed: {type(error).__name__}")
 
         if not file_path:
             file_path = await loop.run_in_executor(
@@ -693,7 +716,6 @@ class InstaDownloader(commands.Cog):
                 print(f"[InstaDL] yt-dlp route failed: {type(error).__name__}")
 
         if not file_path and source == "instagram":
-            shortcode = url.rstrip("/").rsplit("/", 1)[-1]
             try:
                 file_path = await loop.run_in_executor(
                     None,
@@ -701,7 +723,7 @@ class InstaDownloader(commands.Cog):
                         download_instagram_embed,
                         shortcode,
                         upload_limit,
-                        cookie_header=instagram_cookie_header(),
+                        cookie_header=instagram_cookies,
                     ),
                 )
             except Exception as error:
@@ -737,7 +759,9 @@ class InstaDownloader(commands.Cog):
                 if not compressed:
                     await self._send_status(
                         message.channel,
-                        "That media is too large for this server's upload limit.",
+                        "That video is too large to upload here, even after "
+                        "compression. Try a shorter video or raise the server's "
+                        "upload limit.",
                         reference=message,
                     )
                     return
